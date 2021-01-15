@@ -25,43 +25,19 @@ def __setstate__(self, data):
     self.param_groups = data['param_groups']
 
 # Internal Cell
-import numpy as np
-import os
-import time
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 import torch_xla
 import torch_xla.core.xla_model as xm
-import torch_xla.debug.metrics as met
 import torch_xla.distributed.parallel_loader as pl
-import torch_xla.distributed.xla_multiprocessing as xmp
-import torch_xla.utils.utils as xu
-import torchvision
-from torchvision import datasets, transforms
-import torch.utils.data as th_data
-from fastcore.foundation import L
-from pathlib import Path
-from fastcore.xtras import *
-from fastcore.transform import Pipeline
 from fastai.data.core import DataLoaders
-from functools import partial
-import torch.utils.data.distributed as torch_distrib
 
-from pathlib import Path
-import fastcore.xtras
 import math
 from fastcore.basics import store_attr
 from operator import attrgetter
 from fastai.data.load import _FakeLoader
 from fastai.data.core import TfmdDL
-from fastai.torch_core import find_bs, TensorBase
+from fastai.torch_core import TensorBase
 import random
 import torch
-from fastai.data.load import _loaders
-from fastai.torch_core import to_device
-from fastcore.basics import first
 
 
 # Cell
@@ -166,14 +142,8 @@ def make_distributed_dataloaders(dls, rank, world_size):
     return DataLoaders(*new_loaders, path=dls.path, device=dls.device)
 
 # Internal Cell
-from fastai.torch_core import default_device, apply
-import torch
-from fastcore.xtras import is_listy
-import torch
 import torch.utils.hooks
 from fastcore.basics import patch
-from fastai.torch_core import TensorBase
-from collections import OrderedDict
 
 # Cell
 def wrap_parallel_loader(loader, device):
@@ -184,11 +154,10 @@ def wrap_parallel_loader(loader, device):
 # Internal Cell
 from fastai.callback.core import TrainEvalCallback
 from fastai.learner import Recorder
-from fastai.torch_core import one_param
 import torch
 from fastai.callback.core import Callback
-from fastai.learner import CancelTrainException, CancelValidException, CancelStepException
-from fastai.torch_core import tensor, TensorCategory
+from fastai.learner import CancelValidException, CancelStepException
+from fastai.torch_core import tensor
 
 # Cell
 class XLATrainingCallback(Callback):
@@ -247,12 +216,9 @@ class XLATrainingCallback(Callback):
 
 
 # Internal Cell
-from fastcore.imports import noop
-from fastcore.basics import patch
 from fastai.learner import Learner
 from fastai.callback.progress import ProgressCallback
 from fastcore.xtras import join_path_file
-from fastai.torch_core import get_model
 
 
 # Cell
@@ -296,7 +262,7 @@ def build_dataloaders(datablock, source, rank, world_size, device=None, path='.'
 
 
 # Internal Cell
-from fastcore.basics import store_attr
+#from fastcore.basics import store_attr
 
 # Cell
 class ExtendedModel:
@@ -308,7 +274,6 @@ class ExtendedModel:
         self.pretrained = pretrained
 
 # Internal Cell
-from fastai.data.transforms import get_c
 from fastai.vision.learner import create_cnn_model
 
 # Cell
