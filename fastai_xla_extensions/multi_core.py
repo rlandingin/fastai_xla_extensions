@@ -39,13 +39,12 @@ from fastai.torch_core import TensorBase
 import random
 import torch
 
-
 # Cell
 def _recast2tensor(o):
     if isinstance(o,TensorBase):
         # return plain tensor since pl.parallelloader doesn't
         # seem to work with tensor subclasses
-        return torch.tensor(o.numpy())
+        return torch.from_numpy(o.numpy()) # should not copy tensor
     return o
 
 def _round_to_multiple(number,multiple):
@@ -117,8 +116,6 @@ class TPUDistributedDL(TfmdDL):
         self.dl.device = device
         self.device = device
         return self
-
-
 
 # Cell
 def make_distributed_dataloaders(dls, rank, world_size):
@@ -214,12 +211,10 @@ class XLATrainingCallback(Callback):
         self.learn.pct_train += 1./(self.n_iter*self.n_epoch)
         self.learn.train_iter += 1
 
-
 # Internal Cell
 from fastai.learner import Learner
 from fastai.callback.progress import ProgressCallback
 from fastcore.xtras import join_path_file
-
 
 # Cell
 
@@ -233,7 +228,6 @@ def save(self:Learner, file, **kwargs):
         state = {'model': state, 'opt':opt_state}
     xm.save(state, file) # use xm.save instead of torch.save
     return file
-
 
 # Cell
 
@@ -259,7 +253,6 @@ def build_dataloaders(datablock, source, rank, world_size, device=None, path='.'
     dls = datablock.dataloaders(source=source, path=path, device=device, **kwargs)
     distrib_dls = make_distributed_dataloaders(dls, rank, world_size)
     return distrib_dls
-
 
 # Internal Cell
 #from fastcore.basics import store_attr
@@ -290,7 +283,6 @@ def xla_cnn_model(arch,
     model = create_cnn_model(arch, n_out, pretrained=pretrained, concat_pool=False, **kwargs)
     ext_model = ExtendedModel(arch, normalize, n_out, pretrained)
     return ext_model, model
-
 
 # Internal Cell
 from fastai.optimizer import Adam
