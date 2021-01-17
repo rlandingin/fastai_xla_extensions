@@ -2,8 +2,8 @@
 
 __all__ = ['download_cifar10_dsets', 'load_cifar_items', 'load_classes', 'CifarNP2ImageTransform',
            'Int2TensorTransform', 'CifarImageTransform', 'CifarImage2FloatTransform', 'make_torch_tfms',
-           'CifarTupleTransform', 'TupleTorchDS', 'make_cifar_item_tfm', 'i2t_tfm', 'cfnp2img_tfm', 'cfimg_tfm',
-           'cfimg2float_tfm', 'make_cifar_tls', 'make_cifar_dl', 'make_fastai_cifar_dls']
+           'CifarTupleTransform', 'make_cifar_item_tfm', 'i2t_tfm', 'cfnp2img_tfm', 'cfimg_tfm', 'cfimg2float_tfm',
+           'make_cifar_tls', 'make_cifar_dl', 'make_fastai_cifar_dls']
 
 # Internal Cell
 import numpy as np
@@ -147,18 +147,18 @@ from torch.utils.data import Dataset
 # Cell
 # TODO: Use TupleTorchDS to create torch dataloaders
 
-class TupleTorchDS(th_data.Dataset):
-    def __init__(self, items, x_tfm=None, y_tfm=None):
-        store_attr()
+# class TupleTorchDS(th_data.Dataset):
+#     def __init__(self, items, x_tfm=None, y_tfm=None):
+#         store_attr()
 
-    def __len__(self):
-        return len(self.items)
+#     def __len__(self):
+#         return len(self.items)
 
-    def __getitem__(self, index):
-        x,y = self.items[index]
-        x = self.x_tfm(x) if self.x_tfm is not None else x
-        y = self.y_tfm(y) if self.y_tfm is not None else y
-        return (x,y)
+#     def __getitem__(self, index):
+#         x,y = self.items[index]
+#         x = self.x_tfm(x) if self.x_tfm is not None else x
+#         y = self.y_tfm(y) if self.y_tfm is not None else y
+#         return (x,y)
 
 # Internal Cell
 from fastcore.transform import Pipeline
