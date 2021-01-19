@@ -140,7 +140,6 @@ class TfmdTorchDS(th_data.Dataset):
         y = self.y_tfm(item) if self.y_tfm is not None else y
         return (x,y)
 
-
 # Cell
 from fastcore.xtras import is_listy
 import torchvision as thv
@@ -158,7 +157,7 @@ def has_setup(tfms):
 
 def run_setups(tfms, items):
     """run tfm setups including tfm for all items"""
-    indx = has_setup(tfms):
+    indx = has_setup(tfms)
     if indx == -1: # no setup found
         return
 
@@ -212,7 +211,6 @@ class TorchDatasetBuilder:
         test_ds = TfmdTorchDS(test_items, x_tfm=test_x_tfm, y_tfm=y_tfm)
         return train_ds, test_ds
 
-
 # Cell
 from fastai.data.transforms import CategoryMap
 
@@ -230,7 +228,6 @@ class VocabularyMapper:
             return torch.tensor(self.vocab.o2i[o])
         except KeyError as e:
             raise KeyError(f"Label '{o}' was not included in the training dataset") from e
-
 
 # Cell
 @patch_to(th_data.DataLoader)
