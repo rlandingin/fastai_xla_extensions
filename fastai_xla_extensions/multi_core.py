@@ -2,8 +2,8 @@
 
 __all__ = ['__getstate__', '__setstate__', 'TPUDistributedDL', 'TfmdTorchDS', 'to_list', 'has_setup', 'run_setups',
            'TorchDatasetBuilder', 'VocabularyMapper', 'to', 'make_torch_dataloaders', 'make_distributed_dataloaders',
-           'wrap_parallel_loader', 'XLATrainingCallback', 'build_dataloaders', 'ExtendedModel', 'xla_cnn_model',
-           'xla_cnn_learner']
+           'wrap_parallel_loader', 'XLATrainingCallback', 'compute_batch_mean_loss', 'unpack_sync', 'LossTrackerMetric',
+           'SyncRecorderCallback', 'build_dataloaders', 'ExtendedModel', 'xla_cnn_model', 'xla_cnn_learner']
 
 # Cell
 from fastcore.basics import patch_to
@@ -254,6 +254,20 @@ def make_torch_dataloaders(train_dataset, test_dataset,
             # shuffle=True,
             num_workers=num_workers,
             drop_last=True)
+        test_sampler = th_distrib.DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False)
+
+        test_loader = th_data.DataLoader(
+            test_dataset,
+            batch_size=bs,
+            sampler=test_sampler,
+            # shuffle=False,
+            num_workers=num_workers,
+            drop_last=True)
+
     else:
         train_loader = th_data.DataLoader(
             train_dataset,
@@ -263,34 +277,18 @@ def make_torch_dataloaders(train_dataset, test_dataset,
             num_workers=num_workers,
             drop_last=True)
 
-    test_loader = th_data.DataLoader(
-        test_dataset,
-        batch_size=bs,
-        shuffle=False,
-        num_workers=num_workers,
-        drop_last=True)
+        test_loader = th_data.DataLoader(
+            test_dataset,
+            batch_size=bs,
+            shuffle=False,
+            num_workers=num_workers,
+            drop_last=True)
     dataloaders = DataLoaders(train_loader, test_loader, device=None)
     return dataloaders
 
 # Cell
 def make_distributed_dataloaders(dls, rank, world_size):
-    new_loaders = []
-    for i,dl in enumerate(dls.loaders):
-        if i == 0:
-            use_rank = rank
-            use_size = world_size
-        else:
-            # for now, in validation, use all samples since only rank 0 computes
-            # the valid loss and metrics
-            # TODO: figure out a way to consolidate valid loss and metrics across
-            # ranks to make distribute batches across multi cores (and reduce number
-            # of batches per rank -- which should speed up validation)
-            use_rank = 0
-            use_size = 1
-        dl = TPUDistributedDL(dl,
-                            rank=use_rank,
-                            world_size=use_size)
-        new_loaders += [dl]
+    new_loaders = [TPUDistributedDL(dl, rank=rank, world_size=world_size) for dl in dls.loaders]
     return DataLoaders(*new_loaders, path=dls.path, device=dls.device)
 
 # Internal Cell
@@ -332,13 +330,19 @@ class XLATrainingCallback(Callback):
         xm.master_print(' ')
 
     def before_epoch(self):
-        # set the epoch on train only to make sure shuffle produces same seq
-        # across all ranks
+
+        # set the epoch on train and test to make sure shuffle produces same seq
         if hasattr(self.learn.dls.train,'sampler'):
             if hasattr(self.learn.dls.train.sampler,'set_epoch'):
                 self.learn.dls.train.sampler.set_epoch(self.learn.epoch)
         elif hasattr(self.learn.dls.train,'set_epoch'):
             self.learn.dls.train.set_epoch(self.learn.epoch)
+
+        if hasattr(self.learn.dls.valid,'sampler'):
+            if hasattr(self.learn.dls.valid.sampler,'set_epoch'):
+                self.learn.dls.valid.sampler.set_epoch(self.learn.epoch)
+        elif hasattr(self.learn.dls.valid,'set_epoch'):
+            self.learn.dls.valid.set_epoch(self.learn.epoch)
 
     def before_train(self):
         "Set the model in training mode"
@@ -349,8 +353,8 @@ class XLATrainingCallback(Callback):
 
     def before_validate(self):
         "Set the model in validation mode"
-        if self.rank != 0: # no need to compute valid loss/ metric if not master
-            raise CancelValidException()
+#         if self.rank != 0: # no need to compute valid loss/ metric if not master
+#             raise CancelValidException()
         self.model.eval()
         self.learn.training=False
         self.learn.dl = wrap_parallel_loader(self.dls.valid, self.pdevice)
@@ -365,6 +369,192 @@ class XLATrainingCallback(Callback):
         "Update the iter counter (in training mode)"
         self.learn.pct_train += 1./(self.n_iter*self.n_epoch)
         self.learn.train_iter += 1
+
+# Internal Cell
+import copy
+from fastcore.imports import noop
+from fastcore.foundation import L
+from fastai.learner import Metric, AvgMetric, AvgLoss, AvgSmoothLoss
+import torch
+import pickle
+from fastai.torch_core import find_bs, to_detach
+
+# Cell
+
+@patch
+def update_metric(self:Metric, other_metrics, other_losses):
+    # dunno how to handle updates for metrics other than AvgMetric, AvgLoss, AvgSmoothLoss
+    pass
+
+@patch
+def update_metric(self:(AvgMetric,AvgLoss), other_metrics, other_losses):
+    other_metrics = L(other_metrics)
+    # other metrics must also be AvgMetric
+    assert len(other_metrics.map(lambda o: not isinstance(o, (AvgLoss,AvgMetric))).argwhere(noop)) == 0
+    # other metrics must have same name
+    assert len(other_metrics.attrgot('name').map(lambda o: o != self.name).argwhere(noop)) == 0
+    self.total = other_metrics.attrgot('total').sum()
+    self.count = other_metrics.attrgot('count').sum()
+
+def compute_batch_mean_loss(i, other_losses):
+    batch_losses = other_losses.itemgot(i).attrgot('loss')
+    batch_sizes =  other_losses.itemgot(i).attrgot('bs')
+    batch_sum_loss = batch_losses.zipwith(batch_sizes).map(lambda xy: xy[0]*xy[1]).sum()
+    batch_sum_size = batch_sizes.sum()
+    batch_mean_loss = batch_sum_loss / batch_sum_size
+    return batch_mean_loss
+
+@patch
+def update_metric(self:AvgSmoothLoss, other_metrics, other_losses):
+    # reset count,val and beta to start of train (done by SyncRecorderCallback)
+    other_losses = L(other_losses)
+    n_batches = len(other_losses[0]) # get length of batches from one rank
+    smooth_losses = []
+    for i in range(n_batches):
+        batch_mean_loss = compute_batch_mean_loss(i, other_losses)
+        # based on definition of AvgSmoothLoss accumulate, taking into account losses
+        # from across all ranks computed as a mean
+        self.count += 1
+        self.val = torch.lerp(batch_mean_loss, self.val, self.beta)
+        smooth_losses.append(self.value)
+    self.batch_smooth_losses = smooth_losses
+
+def unpack_sync(res):
+    return [pickle.loads(o) for o in res]
+
+
+# Cell
+class LossTrackerMetric(Metric):
+    losses = []
+    def reset(self):
+        self.losses.clear()
+    def accumulate(self, learn):
+        mean_loss = to_detach(learn.loss.mean(),gather=False)
+        bs = find_bs(learn.yb)
+        self.losses.append({'loss': mean_loss, 'bs': bs})
+    @property
+    def value(self):
+        return self.losses
+
+# Internal Cell
+from fastai.learner import _maybe_item
+from fastprogress.fastprogress import format_time
+import time
+
+# Cell
+class SyncRecorderCallback(Callback):
+    """Sync metrics from each spawned process update statistics
+       accordingly so it will display correctly in the progress callback
+    """
+    order  = 55 # after Recorder, before ProgressCallback
+    def __init__(self):
+        self.loss_tracker = LossTrackerMetric() # only track train loss
+
+    def before_fit(self):
+        if not xm.is_master_ordinal():
+            return
+        if 'progress' in self.learn.cbs.attrgot('name',None):
+            self._sync_stats_log = self.progress._write_stats
+        else:
+            self._sync_stats_log = self.learn.logger
+
+        self.sync_smooth_loss = copy.deepcopy(self.recorder.smooth_loss)
+    def after_fit(self):
+        xm.rendezvous('sync recorder after_fit')
+
+    def before_epoch(self):
+        self.sync_log = copy.copy(self.recorder.log)
+
+    def after_epoch(self):
+        if 'recorder' not in self.learn.cbs.attrgot('name'):
+            all_metrics = {
+                'train_mets': L([]),
+                'valid_mets': L([]),
+                'losses': L([])
+            }
+        else:
+            all_metrics = {
+                'train_mets': self.recorder._train_mets,
+                'valid_mets': self.recorder._valid_mets,
+                # list of loss,bs for each train batch
+                #(for recomputing avg smooth loss)
+                'losses': self.loss_tracker.value
+            }
+        # send metrics data to sync ranks across spawned processes
+        sync_tag = f'sync_recorder after epoch{self.learn.epoch}'
+        res = xm.rendezvous(sync_tag, pickle.dumps(all_metrics))
+
+        if xm.is_master_ordinal():
+            all_metrics = unpack_sync(res)
+            self._sync_log(all_metrics) # use metrics across ranks to update log
+
+            if hasattr(self.recorder.smooth_loss,'batch_smooth_losses'):
+                # update recorder losses with smooth losses accounting for losses across ranks
+                batch_smooth_losses = self.recorder.smooth_loss.batch_smooth_losses
+                n_batches = len(self.recorder.losses )
+                # delete last set of batches from current epoch
+                self.recorder.losses = self.recorder.losses[:n_batches - len(batch_smooth_losses)]
+                self.recorder.losses += batch_smooth_losses # replace with batch_smooth_losses
+
+            self.learn.smooth_loss = self.recorder.smooth_loss.value
+            self.learn.final_record = self.sync_log[:1].copy()
+            del self.recorder.values[-1] # remove last entry added by recorder
+            self.recorder.values.append(self.learn.final_record) # add updated metrics
+            if self.recorder.add_time:
+                updated_time = (time.time() - self.recorder.start_epoch)
+                self.sync_log.append(format_time(updated_time))
+            self.recorder.log = self.sync_log
+            self._sync_stats_log(self.sync_log) # write_stats to output
+            del self.recorder.iters[-1] # remove last entry added by recorder
+            self.recorder.iters.append(self.recorder.smooth_loss.count) # add updated smooth loss count
+
+            self.learn.logger = self.orig_logger # restore orig logger after skipping recorder.logger(log)
+
+#         self.learn.final_record = self.log[1:].copy()
+#         self.values.append(self.learn.final_record)
+#         if self.add_time: self.log.append(format_time(time.time() - self.start_epoch))
+#         self.logger(self.log)
+#         self.iters.append(self.smooth_loss.count)
+
+    def before_train(self):
+        self.loss_tracker.reset()
+        if xm.is_master_ordinal():
+            # find all recorder metrics (count, val, beta) of AvgLossMetric type and store a copy
+            self.sync_smooth_loss = copy.deepcopy(self.recorder.smooth_loss)
+
+    def after_train(self):
+        if xm.is_master_ordinal():
+            # undo all batch updates (count, val, beta) to AvgLossMetric type and reset them to before train.
+            self.recorder.smooth_loss.count = self.sync_smooth_loss.count
+            self.recorder.smooth_loss.val = self.sync_smooth_loss.val
+            self.recorder.smooth_loss.beta = self.sync_smooth_loss.beta
+
+    def before_validate(self):
+        pass
+
+    def after_validate(self):
+        if xm.is_master_ordinal():
+            self.orig_logger = self.learn.logger
+            self.learn.logger = noop # write to logger disabled so calling recorder.logger(log) wont print
+        pass
+
+    def before_batch(self):
+        pass
+
+    def after_batch(self):
+        self.loss_tracker.accumulate(self.learn)
+
+    def _sync_log(self, all_metrics):
+        all_metrics = L(all_metrics)
+
+        for i,m in enumerate(self.recorder._train_mets):
+            m.update_metric(all_metrics.attrgot('train_mets').itemgot(i), all_metrics.attrgot('losses'))
+            self.sync_log += _maybe_item(m)
+
+        for i,m in enumerate(self.recorder._valid_mets):
+            m.update_metric(all_metrics.attrgot('valid_mets').itemgot(i), all_metrics.attrgot('losses'))
+            self.sync_log += _maybe_item(m)
+
 
 # Internal Cell
 from fastai.learner import Learner
@@ -391,6 +581,7 @@ def to_xla(self:Learner,device, rank):
     if 'xla_training' not in self.cbs.attrgot('name'):
         self.dls.device = None
         self.add_cbs(XLATrainingCallback(device, rank))
+        self.add_cbs(SyncRecorderCallback())
     else:
         self.xla_training.pdevice = device
         self.xla_training.rank = rank
@@ -399,6 +590,7 @@ def to_xla(self:Learner,device, rank):
 
     if rank != 0:
         self.remove_cbs(ProgressCallback)
+
     self.logger = xm.master_print
 
 # Cell
